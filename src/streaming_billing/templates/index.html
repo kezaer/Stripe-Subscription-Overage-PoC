@@ -1,0 +1,441 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Stripe Subscription Overage PoC</title>
+    <link rel="stylesheet" href="{{ url_for('static', path='/styles.css') }}?v={{ asset_version }}">
+  </head>
+  <body>
+    <main>
+      {% set confirmation = checkout_confirmation|default(None) %}
+      <header class="site-header">
+        <div class="topbar">
+          <span class="wordmark">Stripe Subscription Overage PoC</span>
+          <span class="test-mode-label">Stripe test mode</span>
+          <div class="readiness" aria-label="PoC readiness">
+            <span><i class="status-dot {{ 'on' if configured else 'off' }}"></i>Catalog {{ 'ready' if configured else 'needs setup' }}</span>
+            <span><i class="status-dot {{ 'on' if webhook_enabled else 'optional' }}"></i>{{ 'Webhook mode on' if webhook_enabled else 'Webhooks disabled' }}</span>
+          </div>
+        </div>
+        <div class="hero">
+          <div class="hero-copy">
+            <p class="eyebrow">Proof of concept</p>
+            <h1>Test monthly billing against Stripe</h1>
+            <p class="lede">Create a test subscription, report usage for Plan B, and inspect the webhook events Stripe sends back.</p>
+          </div>
+          <aside class="demo-boundary">
+            <strong>About this PoC</strong>
+            <p>It runs against Stripe test mode and stores state on this machine.</p>
+          </aside>
+        </div>
+      </header>
+
+      <ol class="steps" aria-label="PoC flow">
+        <li><span>1</span><strong>Choose a plan</strong><small>Complete Stripe Checkout.</small></li>
+        <li><span>2</span><strong>Report Plan B usage</strong><small>Skip this for Plan A.</small></li>
+        <li><span>3</span><strong>Inspect events</strong><small>See what Stripe sent.</small></li>
+      </ol>
+
+      {% if checkout_cancelled %}
+        <p class="notice">Checkout was cancelled. No subscription was created.</p>
+      {% endif %}
+      {% if confirmation %}
+        <div class="checkout-confirmation" role="status">
+          <span class="confirmation-mark" aria-hidden="true">✓</span>
+          <div><strong>{{ confirmation.plan_name }} Checkout complete</strong><p>{{ confirmation.message }}</p></div>
+        </div>
+      {% endif %}
+      {% if not configured %}
+        <p class="notice error">The test catalog is not ready yet. Run <code>streaming-billing setup</code>, then refresh this page.</p>
+      {% endif %}
+
+      <section class="panel plan-selection" id="plans" aria-labelledby="plans-heading">
+        <div class="panel-heading">
+          <div><p class="eyebrow">Step 1</p><h2 id="plans-heading">Choose a billing model</h2></div>
+        </div>
+        <p class="section-intro">Choose a plan, then complete Stripe Checkout using the test details below.</p>
+        <aside class="checkout-reference" aria-labelledby="checkout-reference-heading">
+          <div class="reference-header">
+            <div class="reference-copy">
+              <p class="eyebrow">Stripe test checkout</p>
+              <h3 id="checkout-reference-heading">Use these values at Checkout</h3>
+              <p>Use any future expiry date and any three-digit CVC.</p>
+            </div>
+            <div class="coupon-reference">
+              <span class="reference-label">Coupon code</span>
+              <code>{{ product.promotion_code }}</code>
+              <span>{{ product.promotion_percent }}% off the first monthly plan charge for either plan. Plan B overage is excluded.</span>
+            </div>
+          </div>
+          <div class="test-card-grid" aria-label="Stripe test card numbers">
+            {% for card in test_cards %}
+              <div class="test-card-reference">
+                <span class="reference-label">{{ card.scenario }}</span>
+                <code>{{ card.number }}</code>
+              </div>
+            {% endfor %}
+          </div>
+        </aside>
+        <section class="plans" aria-label="Plans">
+          <article class="plan-card">
+            <div class="plan-topline"><p class="eyebrow">Plan A</p><span class="pill">Flat rate</span></div>
+            <h3>${{ product.plan_a_monthly }} <span>/ month</span></h3>
+            <p>One recurring Price covers unlimited use of the streaming service.</p>
+            <p class="plan-note"><strong>No usage reporting.</strong> Checkout is the only subscriber step.</p>
+            <form action="/checkout" method="post">
+              <input type="hidden" name="plan" value="a">
+              <input type="hidden" name="checkout_request_id" value="{{ plan_a_request_id }}">
+              <button type="submit" {% if not configured %}disabled{% endif %}>Test Plan A</button>
+            </form>
+          </article>
+
+          <article class="plan-card">
+            <div class="plan-topline"><p class="eyebrow">Plan B</p><span class="pill">Usage based</span></div>
+            <h3>${{ product.plan_b_base_monthly }} <span>/ month base</span></h3>
+            <p>Includes {{ product.included_gb }} GB, then ${{ product.package_price }} for every started {{ product.package_gb }} GB block.</p>
+            <p class="plan-note"><strong>Usage required.</strong> Report the cycle-to-date GB after Checkout.</p>
+            <form action="/checkout" method="post">
+              <input type="hidden" name="plan" value="b">
+              <input type="hidden" name="checkout_request_id" value="{{ plan_b_request_id }}">
+              <button type="submit" {% if not configured %}disabled{% endif %}>Test Plan B</button>
+            </form>
+          </article>
+        </section>
+
+        <p class="subscription-guidance">
+          Checkout allows multiple subscriptions for the same email by default. This PoC leaves that
+          behavior unchanged. Stripe's
+          <a href="https://docs.stripe.com/payments/checkout/limit-subscriptions">Limit customers to one subscription</a>
+          guide describes the considerations and options for changing it when building your application.
+        </p>
+      </section>
+
+      <section class="workbench" id="usage">
+        <div class="workbench-copy">
+          <p class="eyebrow">Step 2 · Plan B only</p>
+          <h2>Report usage</h2>
+          <p>Choose an active Plan B subscription, then enter the total GB used in the current billing cycle.</p>
+          <div class="pricing-note"><strong>{{ product.included_gb }} GB included</strong><span>Stripe charges ${{ product.package_price }} for each started {{ product.package_gb }} GB block above the allowance.</span></div>
+        </div>
+        <form class="usage-form" action="/usage" method="post">
+          {% if selected_usage %}
+            <div class="result-banner {{ 'danger' if selected_usage.status == 'rejected' else 'success' }}">
+              <strong>{{ selected_usage.status_label }}</strong>
+              <span>{{ selected_usage.total_gb }} GB projects to {{ selected_usage.projected_pre_tax }} before tax.</span>
+            </div>
+          {% endif %}
+          {% if usage_error %}<p class="notice error" role="alert">{{ usage_error }}</p>{% endif %}
+          {% set known_plan_b = plan_b_subscriptions|default([]) %}
+          {% set selected_choice = namespace(value=None) %}
+          {% for subscription in known_plan_b %}
+            {% if usage_form.subscription_id == subscription.subscription_id %}
+              {% set selected_choice.value = subscription %}
+            {% endif %}
+          {% endfor %}
+          <div class="subscription-picker">
+            <div class="picker-heading">
+              <label class="field-label" for="usage-subscription">Plan B subscription</label>
+              {% if known_plan_b %}<span class="pill">{{ known_plan_b|length }} available</span>{% endif %}
+            </div>
+            <div class="select-shell">
+              <select id="usage-subscription" name="subscription_id" aria-describedby="usage-subscription-help" required{% if not known_plan_b %} disabled{% endif %}>
+                <option value="" disabled{% if not usage_form.subscription_id %} selected{% endif %}>{% if known_plan_b %}Select a subscriber and subscription{% else %}No active Plan B subscriptions found{% endif %}</option>
+                {% for subscription in known_plan_b %}
+                  <option value="{{ subscription.subscription_id }}" data-customer-name="{{ subscription.customer_name|default('', true) }}" data-customer-email="{{ subscription.customer_email|default('', true) }}"{% if usage_form.subscription_id == subscription.subscription_id %} selected{% endif %}>{{ subscription.customer_name|default('Unnamed subscriber', true) }} · {{ subscription.customer_email|default('No email', true) }} · {{ subscription.subscription_id }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <p class="field-help" id="usage-subscription-help">{% if known_plan_b %}Active and trialing Plan B subscriptions from this Stripe test account.{% else %}Create a Plan B test subscription first, then refresh this page.{% endif %}</p>
+            {% if subscription_load_failed %}<p class="form-warning">Stripe could not refresh the list, so this dropdown is using subscriptions learned from verified webhooks.</p>{% endif %}
+            <div class="selected-subscription" id="selected-subscription" aria-live="polite"{% if not selected_choice.value %} hidden{% endif %}>
+              <div class="selected-customer-copy">
+                <span class="detail-label">Selected subscriber</span>
+                <strong id="usage-customer-name">{{ selected_choice.value.customer_name|default('Unnamed subscriber', true) if selected_choice.value else '' }}</strong>
+                <span id="usage-customer-email">{{ selected_choice.value.customer_email|default('No email', true) if selected_choice.value else '' }}</span>
+              </div>
+              <div class="selected-subscription-id">
+                <span class="detail-label">Subscription</span>
+                <code id="usage-subscription-id">{{ selected_choice.value.subscription_id if selected_choice.value else '' }}</code>
+              </div>
+            </div>
+          </div>
+          <label for="usage-total">Cycle-to-date GB
+            <input id="usage-total" name="total_gb" value="{{ usage_form.total_gb }}" placeholder="111" inputmode="decimal" required>
+            <small>Send the total for this billing cycle, not the latest increment.</small>
+          </label>
+          <button type="submit" {% if not configured or not known_plan_b %}disabled{% endif %}>Send usage to Stripe</button>
+          <p class="form-footnote">The PoC assigns the retry identity. Stripe processes Meter Events asynchronously, so acceptance is not final invoice or aggregate confirmation.</p>
+        </form>
+      </section>
+
+      <script>
+        (() => {
+          const subscription = document.querySelector("#usage-subscription");
+          const summary = document.querySelector("#selected-subscription");
+          const customerName = document.querySelector("#usage-customer-name");
+          const customerEmail = document.querySelector("#usage-customer-email");
+          const subscriptionId = document.querySelector("#usage-subscription-id");
+          if (!subscription || !summary || !customerName || !customerEmail || !subscriptionId) return;
+          const syncCustomer = () => {
+            const option = subscription.selectedOptions[0];
+            const selected = Boolean(option?.value);
+            summary.hidden = !selected;
+            customerName.textContent = option?.dataset.customerName || "Unnamed subscriber";
+            customerEmail.textContent = option?.dataset.customerEmail || "No email";
+            subscriptionId.textContent = option?.value || "";
+          };
+          subscription.addEventListener("change", syncCustomer);
+          syncCustomer();
+        })();
+      </script>
+
+      {% if usage_activity %}
+        <section class="panel">
+          <div class="panel-heading"><div><p class="eyebrow">Plan B usage</p><h2>Recent submissions</h2></div><span class="pill">Stored locally</span></div>
+          <div class="activity-list">
+            {% for item in usage_activity %}
+              <article class="activity-item">
+                <div class="activity-primary">
+                  <span class="badge status-{{ item.status }}">{{ item.status_label }}</span>
+                  <strong>{{ item.total_gb }} GB · {{ item.projected_pre_tax }}</strong>
+                  <a class="activity-identity" href="/?usage_subscription={{ item.subscription_id }}#usage" title="{{ item.customer_name|default('Unnamed subscriber', true) }} · {{ item.customer_email|default('No email', true) }} · {{ item.subscription_id }}">{{ item.customer_name|default('Unnamed subscriber', true) }} · {{ item.customer_email|default('No email', true) }} · <code>{{ item.subscription_id }}</code></a>
+                </div>
+                <div class="activity-meta"><span>{{ item.reported_excess_gb }} excess GB</span></div>
+                {% if item.errors %}
+                  <div class="error-details"><strong>Correlated Stripe meter error</strong>{% for error in item.errors %}<p><code>{{ error.code }}</code> {{ error.message }}</p>{% endfor %}<small>Thin Event: <code>{{ item.error_event_id }}</code></small></div>
+                {% endif %}
+                <p class="activity-request">Revision {{ item.revision }} · Meter Event <code>{{ item.event_id }}</code></p>
+              </article>
+            {% endfor %}
+          </div>
+        </section>
+      {% endif %}
+
+      <section class="panel lifecycle" id="webhooks">
+        <div class="panel-heading">
+          <div><p class="eyebrow">Step 3 · Optional</p><h2>Webhook deliveries</h2></div>
+          <span class="badge {{ 'status-active' if webhook_enabled else 'status-optional' }}">{{ 'Webhook mode on' if webhook_enabled else 'Not configured' }}</span>
+        </div>
+        {% if not webhook_enabled %}
+          <p class="notice">Start the PoC with webhook mode to receive and verify Stripe events here. Checkout and Plan B usage still work without it.</p>
+        {% else %}
+          <p class="section-intro">All verified webhook deliveries received by this PoC appear here, newest first. Handled events update PoC state; observed-only events are recorded without changing it.</p>
+        {% endif %}
+
+        {% if webhook_activity is defined %}
+          {% set activity = webhook_activity %}
+        {% elif lifecycle_history %}
+          {% set activity = lifecycle_history %}
+        {% else %}
+          {% set activity = events %}
+        {% endif %}
+
+        {% if activity %}
+          <div class="delivery-toolbar">
+            <p id="webhook-delivery-count" class="delivery-count" aria-live="polite">{% if activity|length > 5 %}Showing latest 5 of {{ activity|length }} verified deliveries{% else %}{{ activity|length }} verified deliver{{ 'y' if activity|length == 1 else 'ies' }} · newest first{% endif %}</p>
+            <div class="delivery-legend" aria-label="Delivery handling legend">
+              <span><i class="delivery-key handled" aria-hidden="true"></i>Handled</span>
+              <span><i class="delivery-key observed" aria-hidden="true"></i>Observed only</span>
+            </div>
+          </div>
+          <ol id="webhook-delivery-feed" class="webhook-feed" aria-label="Webhook deliveries by receipt time, newest first"{% if activity|length > 5 %} data-collapsible data-collapsed-limit="5"{% endif %}>
+            {% for event in activity %}
+              {% set event_type = event.event_type|default(event.type, true) %}
+              {% set event_handled = event.handled|default(true) %}
+              {% set receipt_time = event.received_display|default(event.processed_display, true)|default(event.created_display, true)|default('Time unavailable', true) %}
+              {% set receipt_time_iso = event.received_iso|default(event.processed_iso, true)|default(event.created_iso, true)|default('', true) %}
+              {% set created_time_iso = event.created_iso|default('', true) %}
+              {% set received_time_iso = event.received_iso|default('', true) %}
+              {% set processed_time_iso = event.processed_iso|default('', true) %}
+              {% set next_step = event.next_step|default('', true) %}
+              {% set event_subscription_id = event.subscription_id|default('', true) %}
+              {% set event_customer_id = event.customer_id|default('', true) %}
+              {% set title = event.title|default('', true) %}
+              {% if not title %}
+                {% if event_type == 'checkout.session.completed' %}{% set title = 'Checkout completed' %}
+                {% elif event_type == 'invoice.paid' %}{% set title = 'Invoice paid' %}
+                {% elif event_type == 'invoice.payment_failed' %}{% set title = 'Invoice payment failed' %}
+                {% elif event_type == 'customer.subscription.created' %}{% set title = 'Subscription created' %}
+                {% elif event_type == 'customer.subscription.updated' %}{% set title = 'Subscription updated' %}
+                {% elif event_type == 'customer.subscription.deleted' %}{% set title = 'Subscription ended' %}
+                {% elif event_type == 'v1.billing.meter.error_report_triggered' %}{% set title = 'Usage event rejected' %}
+                {% elif event_type == 'v1.billing.meter.no_meter_found' %}{% set title = 'Usage meter not found' %}
+                {% else %}{% set title = 'Webhook received' %}
+                {% endif %}
+              {% endif %}
+              {% set explanation = event.explanation|default('', true) %}
+              {% if not explanation %}
+                {% if event_type == 'checkout.session.completed' %}{% set explanation = 'Stripe confirmed that the subscriber finished hosted Checkout.' %}
+                {% elif event_type == 'invoice.paid' %}{% set explanation = 'Stripe collected payment for the invoice.' %}
+                {% elif event_type == 'invoice.payment_failed' %}{% set explanation = 'Stripe could not collect payment for the invoice.' %}
+                {% elif event_type == 'customer.subscription.created' %}{% set explanation = 'Stripe created the subscription and reported its initial status.' %}
+                {% elif event_type == 'customer.subscription.updated' %}{% set explanation = 'Stripe changed the subscription status or billing settings.' %}
+                {% elif event_type == 'customer.subscription.deleted' %}{% set explanation = 'Stripe ended the subscription.' %}
+                {% elif event_type in ['v1.billing.meter.error_report_triggered', 'v1.billing.meter.no_meter_found'] %}{% set explanation = 'Stripe reported a problem while processing a usage event.' %}
+                {% else %}{% set explanation = 'Stripe delivered this event to the PoC.' %}
+                {% endif %}
+              {% endif %}
+              <li class="webhook-event-item">
+                <details class="webhook-event">
+                  <summary>
+                    <span class="event-status-icon" aria-hidden="true">✓</span>
+                    <span class="event-summary-copy">
+                      <strong>{{ title }}</strong>
+                      <span>{{ explanation }}</span>
+                      {% if event_customer_id or event_subscription_id %}
+                        <span class="event-customer-identity" title="{{ event.customer_name|default('Unnamed subscriber', true) }} · {{ event.customer_email|default('No email', true) }}{% if event_customer_id %} · {{ event_customer_id }}{% endif %}{% if event_subscription_id %} · {{ event_subscription_id }}{% endif %}">{{ event.customer_name|default('Unnamed subscriber', true) }} · {{ event.customer_email|default('No email', true) }}{% if event_customer_id %} · <code>{{ event_customer_id }}</code>{% endif %}{% if event_subscription_id %} · <code>{{ event_subscription_id }}</code>{% endif %}</span>
+                      {% endif %}
+                      <span class="event-technical-line"><code>{{ event_type or 'unknown' }}</code></span>
+                    </span>
+                    <span class="event-summary-meta">
+                      <time{% if receipt_time_iso %} datetime="{{ receipt_time_iso }}"{% endif %}>Received {{ receipt_time }}</time>
+                      <span class="event-badges">
+                        <span class="badge status-{{ event.verification_status|default('verified', true)|lower|replace(' ', '-') }}">{{ event.verification_label|default(event.verification_status, true)|default('Verified', true)|replace('_', ' ') }}</span>
+                        <span class="badge status-{{ 'handled' if event_handled else 'observed' }}">{{ 'Handled' if event_handled else 'Observed only' }}</span>
+                      </span>
+                    </span>
+                    <span class="event-chevron" aria-hidden="true"></span>
+                  </summary>
+                  <div class="event-body">
+                    <div class="event-outcome-grid">
+                      <section>
+                        <h4>What Stripe reported</h4>
+                        <p>{{ explanation }}</p>
+                      </section>
+                      <section>
+                        <h4>What the PoC did</h4>
+                        <p>{{ event.application_action|default('Recorded the verified event. No lifecycle rule is configured for this event type.', true) }}</p>
+                      </section>
+                      <section class="entitlement-impact impact-{{ event.entitlement_state|default(event.access_state, true)|default('none', true)|lower|replace(' ', '-') }}">
+                        <h4>Streaming access</h4>
+                        <p>{{ event.entitlement_impact|default('No access change.', true) }}</p>
+                      </section>
+                    </div>
+                    {% if next_step %}
+                      <aside class="event-next-step">
+                        <h4>What you can do next</h4>
+                        <p>{{ next_step }}</p>
+                      </aside>
+                    {% endif %}
+                    <details class="technical-details" open>
+                      <summary>Technical details</summary>
+                      <p>Stripe signature verification ran before storage. If Stripe sends the same Event ID again, the PoC keeps one record and does not repeat the application action.</p>
+                      <dl>
+                        {% if event_customer_id %}
+                          <dt>Subscriber name</dt><dd>{{ event.customer_name|default('Unnamed subscriber', true) }}</dd>
+                          <dt>Subscriber email</dt><dd>{{ event.customer_email|default('No email', true) }}</dd>
+                          <dt>Stripe Customer ID</dt><dd><code>{{ event_customer_id }}</code></dd>
+                        {% endif %}
+                        {% if event_subscription_id %}
+                          <dt>Subscription</dt><dd><code>{{ event_subscription_id }}</code></dd>
+                        {% endif %}
+                        <dt>Event type</dt><dd><code>{{ event_type or 'unknown' }}</code></dd>
+                        <dt>Event ID</dt><dd><code>{{ event.id|default(event.event_id, true)|default('unavailable', true) }}</code></dd>
+                        {% if event.object_relations %}
+                          <dt>Related objects</dt>
+                          <dd class="object-relations">{% for object in event.object_relations %}<span>{{ object.object_type|replace('_', ' ') }} <code>{{ object.id }}</code></span>{% endfor %}</dd>
+                        {% else %}
+                          <dt>Related object</dt><dd><code>{{ event.resource_id|default('none', true) }}</code></dd>
+                          <dt>Subscription</dt><dd><code>{{ event.subscription_id|default('none', true) }}</code></dd>
+                        {% endif %}
+                        <dt>Stripe created</dt><dd><time{% if created_time_iso %} datetime="{{ created_time_iso }}"{% endif %}>{{ event.created_display|default('unavailable', true) }}</time></dd>
+                        <dt>PoC received</dt><dd><time{% if received_time_iso %} datetime="{{ received_time_iso }}"{% endif %}>{{ event.received_display|default('unavailable', true) }}</time></dd>
+                        <dt>PoC processed</dt><dd><time{% if processed_time_iso %} datetime="{{ processed_time_iso }}"{% endif %}>{{ event.processed_display|default('unavailable', true) }}</time></dd>
+                        <dt>Signature</dt><dd>{{ event.verification_label|default(event.verification_status, true)|default('Verified before processing', true)|replace('_', ' ') }}</dd>
+                        <dt>Processing</dt><dd>{{ event.processing_label|default(event.processing_status, true)|default(event.status, true)|default('Processed once', true)|replace('_', ' ') }}</dd>
+                      </dl>
+                    </details>
+                  </div>
+                </details>
+              </li>
+            {% endfor %}
+          </ol>
+          {% if activity|length > 5 %}
+            <button id="webhook-delivery-toggle" class="delivery-toggle" type="button" aria-controls="webhook-delivery-feed" aria-expanded="false" data-total="{{ activity|length }}" data-limit="5" hidden>
+              <span>Show all {{ activity|length }} deliveries</span>
+              <i aria-hidden="true"></i>
+            </button>
+            <script>
+              (() => {
+                const feed = document.querySelector("#webhook-delivery-feed[data-collapsible]");
+                const toggle = document.querySelector("#webhook-delivery-toggle");
+                const count = document.querySelector("#webhook-delivery-count");
+                if (!feed || !toggle || !count) return;
+                const total = Number(toggle.dataset.total);
+                const limit = Number(toggle.dataset.limit);
+                const label = toggle.querySelector("span");
+                const render = (expanded) => {
+                  feed.classList.toggle("is-collapsed", !expanded);
+                  toggle.setAttribute("aria-expanded", String(expanded));
+                  label.textContent = expanded ? `Show latest ${limit}` : `Show all ${total} deliveries`;
+                  count.textContent = expanded
+                    ? `Showing all ${total} verified deliveries · newest first`
+                    : `Showing latest ${limit} of ${total} verified deliveries`;
+                };
+                toggle.hidden = false;
+                render(false);
+                toggle.addEventListener("click", () => {
+                  render(toggle.getAttribute("aria-expanded") !== "true");
+                });
+              })();
+            </script>
+          {% endif %}
+          <p class="delivery-scope-note">This ledger includes events received while the local listener was running; it does not backfill events emitted while the listener was stopped.</p>
+        {% elif webhook_enabled %}
+          <div class="empty-state">
+            <strong>Waiting for a webhook delivery</strong>
+            <p>Complete a test Checkout or change something in Stripe test mode. Every event received by the running listener will appear here.</p>
+          </div>
+        {% endif %}
+
+        {% if subscriptions %}
+          <section class="subscription-summary" aria-labelledby="current-subscriptions-heading">
+            <div class="subsection-heading">
+              <div>
+                <p class="eyebrow">Resulting state</p>
+                <h3 id="current-subscriptions-heading">Current subscriptions</h3>
+              </div>
+              <p>{{ subscriptions|length }} subscription{{ '' if subscriptions|length == 1 else 's' }} tracked by this PoC</p>
+            </div>
+            <div class="subscription-list">
+              {% for subscription in subscriptions %}
+                {% set subscription_plan_code = subscription.plan_code|default('', true) %}
+                <article class="subscription-row">
+                  <div class="subscription-identity">
+                    <strong>{% if subscription_plan_code == 'a' %}Plan A{% elif subscription_plan_code == 'b' %}Plan B{% else %}{{ subscription.plan_name|default('Streaming subscription', true) }}{% endif %}</strong>
+                    <span class="subscription-customer" title="{{ subscription.customer_name|default('Unnamed subscriber', true) }} · {{ subscription.customer_email|default('No email', true) }}">{{ subscription.customer_name|default('Unnamed subscriber', true) }} · {{ subscription.customer_email|default('No email', true) }}</span>
+                    {% if subscription_plan_code == 'b' %}<a href="/?usage_subscription={{ subscription.subscription_id }}#usage" title="Use this Plan B subscription for usage reporting"><code>{{ subscription.subscription_id }}</code></a>{% else %}<code>{{ subscription.subscription_id }}</code>{% endif %}
+                  </div>
+                  <div class="subscription-fact">
+                    <span>Access</span>
+                    <span class="badge status-{{ subscription.access_state }}">Service access: {{ subscription.access_label }}</span>
+                  </div>
+                  <div class="subscription-fact">
+                    <span>Stripe status</span>
+                    <strong>{{ subscription.subscription_status_label }}</strong>
+                  </div>
+                  <div class="subscription-fact">
+                    <span>Latest payment</span>
+                    <strong>{% if subscription.amount_paid_display %}{{ subscription.amount_paid_display }} paid{% elif subscription.latest_invoice_status %}{{ subscription.latest_invoice_status|replace('_', ' ') }}{% else %}Not received{% endif %}</strong>
+                  </div>
+                  <details class="subscription-details">
+                    <summary>Identifiers</summary>
+                    <dl>
+                      <dt>Stripe Customer</dt><dd><code>{{ subscription.customer_id or 'unknown' }}</code></dd>
+                      <dt>Latest invoice</dt><dd><code>{{ subscription.latest_invoice_id or 'not received' }}</code></dd>
+                      <dt>Most recent event</dt><dd><code>{{ subscription.last_event_type }}</code></dd>
+                      <dt>Access decision</dt><dd><code>{{ subscription.access_event_type or 'not received' }}</code></dd>
+                      <dt>Updated</dt><dd>{{ subscription.created_display }}</dd>
+                    </dl>
+                  </details>
+                </article>
+              {% endfor %}
+            </div>
+          </section>
+        {% endif %}
+      </section>
+      <footer><p>Stripe test-mode proof of concept with local state.</p></footer>
+    </main>
+  </body>
+</html>

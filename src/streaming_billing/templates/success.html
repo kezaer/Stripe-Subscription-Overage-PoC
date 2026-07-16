@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Test Checkout complete</title>
+    <link rel="stylesheet" href="{{ url_for('static', path='/styles.css') }}">
+  </head>
+  <body>
+    <main class="narrow">
+      <section class="success-card">
+        {% set plan_code = summary.plan_code|default('') %}
+        {% set is_plan_b = plan_code == 'b' %}
+        <div class="success-mark" aria-hidden="true">✓</div>
+        <p class="eyebrow">Stripe test mode · {{ summary.plan_name|default('Checkout', true) }}</p>
+        <h1>{{ 'Plan B checkout complete' if is_plan_b else 'Checkout complete' }}</h1>
+        {% if is_plan_b %}
+          <p class="lede">Stripe created the subscription below. Use its ID to report the total GB for the current billing cycle.</p>
+        {% else %}
+          <p class="lede">Stripe returned the Checkout Session below. Return to the PoC to continue.</p>
+        {% endif %}
+        <dl class="summary-list">
+          <dt>Session</dt><dd><code>{{ summary.session_id }}</code></dd>
+          <dt>Stripe Customer</dt><dd><code>{{ summary.customer_id or "pending" }}</code></dd>
+          <dt>Subscription</dt><dd><code>{{ summary.subscription_id or "pending" }}</code></dd>
+          <dt>Session status</dt><dd><span class="badge status-active">{{ summary.status or "unknown" }}</span></dd>
+          <dt>Payment status</dt><dd>{{ summary.payment_status or "unknown" }}</dd>
+        </dl>
+        {% if is_plan_b and summary.subscription_id %}
+          <div class="next-actions">
+            <a class="button" href="/?usage_subscription={{ summary.subscription_id }}#usage">Report Plan B usage</a>
+            <a class="button secondary" href="/">Return to PoC</a>
+          </div>
+        {% else %}
+          <a class="button" href="/">Return to PoC</a>
+        {% endif %}
+        <aside class="checkout-note">
+          <strong>Access comes from webhooks</strong>
+          <p>Use verified webhooks to govern access. The browser return confirms Checkout. Your service should grant access after an event such as <code>invoice.paid</code>.{% if webhook_enabled %} Webhook mode is on, so this PoC will show the event on the home page.{% endif %}</p>
+        </aside>
+      </section>
+    </main>
+  </body>
+</html>

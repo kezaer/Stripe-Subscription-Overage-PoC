@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=80"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stripe-subscription-overage-poc"
+version = "0.1.0"
+description = "Proof of concept for Stripe subscriptions with metered overage"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+authors = [
+    {name = "Nikolai Fateev", email = "66110313+kezaer@users.noreply.github.com"},
+]
+dependencies = [
+    "fastapi>=0.116,<1",
+    "jinja2>=3.1,<4",
+    "python-dotenv>=1.1,<2",
+    "python-multipart>=0.0.20,<1",
+    "stripe==15.3.1",
+    "uvicorn>=0.35,<1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "httpx>=0.28,<1",
+    "pytest>=9.0.3,<10",
+    "ruff>=0.12,<1",
+]
+
+[project.scripts]
+streaming-billing = "streaming_billing.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+streaming_billing = ["templates/*.html", "static/*.css"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
