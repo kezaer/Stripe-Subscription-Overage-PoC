@@ -20,30 +20,64 @@ Requirements:
 - [`uv`](https://docs.astral.sh/uv/getting-started/installation/)
 - a Stripe Sandbox or test-mode `sk_test_...` secret key
 
-Clone the repository:
+Clone the repository, enter it:
 
 ```sh
 git clone https://github.com/kezaer/Stripe-Subscription-Overage-PoC.git
 cd Stripe-Subscription-Overage-PoC
 ```
 
-Run the PoC:
+Run one command:
 
 ```sh
 uv run streaming-billing demo
 ```
 
-The command prompts for the test key without saving it, provisions the catalog, starts a
-loopback-only FastAPI app, and opens [http://127.0.0.1:8000](http://127.0.0.1:8000).
+If `STRIPE_SECRET_KEY` is absent, the command asks for the test key through a hidden prompt. It does
+not save the key to disk. The command then:
 
-Install the [Stripe CLI](https://docs.stripe.com/stripe-cli) to include signed snapshot and thin
-webhook events:
+1. installs the locked project dependencies through `uv`;
+2. creates or validates the Products, Prices, Billing Meter, Coupon, and Promotion Code;
+3. derives Checkout return URLs from the host and port;
+4. starts the loopback-only app at [http://127.0.0.1:8000](http://127.0.0.1:8000);
+5. opens the app in your browser.
+
+Press `Ctrl+C` in the terminal to stop it. Use `--no-open` when you do not want the command to open
+a browser:
+
+```sh
+uv run streaming-billing demo --no-open
+```
+
+Basic mode does not require the Stripe CLI or a webhook signing secret. It covers catalog setup,
+Checkout, pricing, and Plan B Meter Event submission. Use the full mode to test event-driven
+subscription access.
+
+## Start the full webhook demo
+
+Install the [Stripe CLI](https://docs.stripe.com/stripe-cli), then run:
 
 ```sh
 uv run streaming-billing demo --with-webhooks
 ```
 
-Use Stripe test card `4242 4242 4242 4242`, any future expiry date, and any three-digit CVC.
+The demo passes the same test key to the Stripe CLI through the child process environment. It starts
+a listener for snapshot and thin events, reads the temporary signing secret, configures the local
+app, and stops the listener when the app exits. You do not need `stripe login` or a copied
+`whsec_...` value.
+
+## Demo data
+
+Use these Stripe test cards with any future expiry date and any three-digit CVC:
+
+| Scenario | Card number |
+|---|---|
+| Successful payment | `4242 4242 4242 4242` |
+| Authentication required | `4000 0025 0000 3155` |
+| Insufficient funds | `4000 0000 0000 9995` |
+
+Stripe lists more cases in its [test card documentation](https://docs.stripe.com/testing#cards).
+
 Enter `LAUNCH20` to apply 20% off the eligible base charge on the first invoice.
 
 ## Demonstrated flow
