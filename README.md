@@ -80,29 +80,50 @@ Stripe lists more cases in its [test card documentation](https://docs.stripe.com
 
 Enter `LAUNCH20` to apply 20% off the eligible base charge on the first invoice.
 
-## Demonstrated flow
+## Try both plans
 
-1. Choose Plan A or Plan B and complete Stripe Checkout.
-2. For Plan B, submit the current billing cycle's total GB.
-3. Inspect the Meter Event receipt, aggregate status, and verified webhook activity.
+### Plan A
 
-The PoC reports Plan B's cycle-to-date excess usage with a Billing Meter that uses `last`
-aggregation. A metered Price divides excess GB by 10 and rounds up:
+1. Select Plan A.
+2. Enter `LAUNCH20` in Checkout if you want to test 20% off the first invoice.
+3. Complete Stripe Checkout and note the returned Customer and Subscription IDs.
+4. Inspect the new Customer, Subscription, and invoice in the Stripe Dashboard.
+5. In full webhook mode, return to the app and expand the verified `invoice.paid` and subscription
+   events. The Checkout return page confirms the browser flow, while verified webhooks govern access.
 
-| Total usage | Meter value | Overage blocks | Plan B total before tax |
+### Plan B and usage
+
+1. Select Plan B and enter `LAUNCH20` in Checkout if you want to test 20% off the eligible base line
+   on the first invoice.
+2. Complete Checkout and return to the app.
+3. Choose the customer and active Plan B subscription from the Stripe-backed dropdown, then enter
+   the current cycle's total GB in the usage form.
+4. Submit the cycle total, then inspect the local receipt and Stripe Meter Event Summary.
+
+`LAUNCH20` applies to the Plan A Product and Plan B base Product. Plan B metered overage appears on a
+later invoice and falls outside this first-invoice offer.
+
+The form accepts cycle-to-date total usage. It subtracts the included 100 GB and sends the excess
+to Stripe. Examples:
+
+| Total cycle usage | Meter value | Billable blocks | Plan B pre-tax total before coupon |
 |---:|---:|---:|---:|
 | 100 GB | 0 | 0 | $10.99 |
 | 101 GB | 1 | 1 | $11.99 |
 | 110 GB | 10 | 1 | $11.99 |
 | 111 GB | 11 | 2 | $12.99 |
 
-The integration pins Stripe API version `2026-06-24.dahlia` through `stripe-python` 15.3.1 and uses
-flexible billing mode for new subscriptions.
+Stripe queues Meter Events before aggregation. A submitted receipt means Stripe accepted the
+request. Use the `usage-status` command to check whether the current aggregate matches the submitted
+value.
 
 ## Documentation
 
 - [Implementation guide](docs/implementation-guide.md)
 - [Business decisions](docs/business-decisions.md)
+
+The integration pins Stripe API version `2026-06-24.dahlia` through `stripe-python` 15.3.1 and uses
+flexible billing mode for new subscriptions.
 
 ## Useful commands
 
