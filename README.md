@@ -20,9 +20,16 @@ Requirements:
 - [`uv`](https://docs.astral.sh/uv/getting-started/installation/)
 - a Stripe Sandbox or test-mode `sk_test_...` secret key
 
+Clone the repository:
+
 ```sh
 git clone https://github.com/kezaer/Stripe-Subscription-Overage-PoC.git
 cd Stripe-Subscription-Overage-PoC
+```
+
+Run the PoC:
+
+```sh
 uv run streaming-billing demo
 ```
 
